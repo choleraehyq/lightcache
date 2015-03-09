@@ -13,6 +13,7 @@
 #include <limits>
 #include <cstring>
 #include <sys/mman.h>
+#include <iostream>
 
 #include "err.h"
 
@@ -106,11 +107,17 @@ template <typename K, typename V>
 		tableAddr->totalNode = totalNode;
 		strncpy(tableAddr->fileName, pathname,	sizeof(tableAddr->fileName));
 
+		std::cout << "usedCount: " << tableAddr->usedCount << std::endl;
 		if (tableAddr->usedCount == 0) {
 			//this is a new cache
 			for (ptrdiff_t i = 0; i < tableSize; i++) {
+				std::cout << "bucket " << i << bucketAddr + i << std::endl;
+				std::cout << (bucketAddr + i)->head << std::endl;
+				std::cout << (bucketAddr + i)->head << std::endl;
 				(bucketAddr + i)->head = invalidId;
 				(bucketAddr + i)->tail = invalidId;
+				std::cout << (bucketAddr + i)->head << std::endl;
+				std::cout << (bucketAddr + i)->head << std::endl;
 			}
 			tableAddr->freeNode = 0;
 			tableAddr->recycledNode = invalidId;
@@ -133,15 +140,29 @@ template <typename K, typename V>
 		if (nodeId != invalidId) { //modify old node
 			(entry + nodeId)->value = value;
 		} else { //add new node
+	//		std::cout << "add new node" << std::endl;
 			nodeId = getFreeNode();
+	//		std::cout << "get free node done" << std::endl;
+	//		std::cout << "freeNodeId: "<< nodeId << std::endl;
 			size_t hashCode = hashFunc(key);
 			struct Node *newNode = entry + nodeId;
+	//		std::cout << "newNodeAddr: "<< newNode << std::endl;
 			newNode->key = key;
+	//		std::cout << "new key: "<< newNode->key << std::endl;
 			newNode->hashCode = hashCode;
+	//		std::cout << "new hashCode:" << newNode->hashCode << std::endl;
+	//		std::cout << "value: " << value << std::endl;
 			newNode->value = value;
-			uint32_t index = nodeId % tableAddr->tableLen;
+	//		std::cout << "new value: "<< newNode->value << std::endl;
+			uint32_t index;
+			if (nodeId == 0) 
+				index = nodeId;
+			index = nodeId % tableAddr->tableLen;
+	//		std::cout << "index: "<< index << std::endl;
 			addNewNodeToBucket(nodeId, index);
+			std::cout << "add to bucket done" << std::endl;
 			addNewNodeToLru(nodeId);
+			std::cout << "add to lru done" << std::endl;
 		}
 	}
 
@@ -227,8 +248,11 @@ template <typename K, typename V>
 		size_t hashCode = hashFunc(key);
 		uint32_t index = hashCode % tableAddr->tableLen;
 		struct BucketList *tmpList = bucketAddr + index;
+		std::cout << "tmpList: " << tmpList << std::endl;
 		uint32_t nodeId = tmpList->head;
+		std::cout << "nodeId: " << nodeId << std::endl;
 		while (nodeId != invalidId) {
+			std::cout << "nodeId: " << nodeId << std::endl;
 			struct Node *tmpNode = entry + nodeId;
 			if (tmpNode->hashCode == hashCode && tmpNode->key == key) 
 				break;
@@ -269,6 +293,10 @@ template <typename K, typename V>
 
 	template <typename K, typename V>
 	void cache<K, V>::addNewNodeToBucket(uint32_t nodeId, uint32_t index) {
+		std::cout << "index: " << index << std::endl;
+		std::cout << "tableLen:" <<tableAddr->tableLen << std::endl;
+		std::cout << "nodeId: " << nodeId << std::endl;
+		std::cout << "totalnode" << tableAddr->totalNode << std::endl;
 		if (index >= tableAddr->tableLen || nodeId >= tableAddr->totalNode) 
 			return;
 		struct BucketList *tmpBucket = bucketAddr + index;
@@ -328,7 +356,9 @@ template <typename K, typename V>
 
 		tmpNode->next = tableAddr->recycledNode;
 		tableAddr->recycledNode = nodeId;
+		std::cout << "re: usedCount"<< tableAddr->usedCount;
 		(tableAddr->usedCount)--;
+		std::cout << "usedCount-- done" << tableAddr->usedCount << std::endl;
 	}
 
 	template <typename K, typename V>

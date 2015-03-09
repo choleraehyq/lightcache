@@ -8,3 +8,4 @@ demo: demo.cc lightcache.h
 clean: 
 	-rm demo
 	-rm *~
+	-rm demo.out
