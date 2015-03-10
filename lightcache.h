@@ -13,6 +13,7 @@
 #include <limits>
 #include <cstring>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <iostream>
 
 #include "err.h"
@@ -29,7 +30,7 @@ template <typename K, typename V>
 			cache(const cache &) = delete;
 			cache &operator=(const cache &) = delete;
 			void set(const K &, const V &);
-			const V &get(const K &, const V &);//get or else
+			const V &getOrElse(const K &, const V &);//get or else
 			bool del(const K &);
 			bool exist(const K &);
 			uint32_t count();
@@ -69,6 +70,7 @@ template <typename K, typename V>
 			std::function<size_t(K)> hashFunc;
 
 			void *attachFile(const char *, size_t);
+			//Fix me! 
 			void releaseFile(void *addr, size_t length);
 			uint32_t getIdByKey(const K &);
 			uint32_t getFreeNode();
@@ -76,7 +78,9 @@ template <typename K, typename V>
 			void addNewNodeToLru(uint32_t);
 			void recycleNodeFromBucket(uint32_t, uint32_t);
 			void recycleHeadFromLru();
+			void recycleNodeFromLru(uint32_t);
 			uint32_t getFirstNodeFromLru();
+			void MoveToTailLru(uint32_t);
 
 			const uint32_t invalidId = std::numeric_limits<unsigned int>::max();
 			const uint32_t headSize = 1024;
@@ -112,12 +116,12 @@ template <typename K, typename V>
 			//this is a new cache
 			for (ptrdiff_t i = 0; i < tableSize; i++) {
 				std::cout << "bucket " << i << bucketAddr + i << std::endl;
-				std::cout << (bucketAddr + i)->head << std::endl;
-				std::cout << (bucketAddr + i)->head << std::endl;
+		//		std::cout << (bucketAddr + i)->head << std::endl;
+		//		std::cout << (bucketAddr + i)->head << std::endl;
 				(bucketAddr + i)->head = invalidId;
 				(bucketAddr + i)->tail = invalidId;
-				std::cout << (bucketAddr + i)->head << std::endl;
-				std::cout << (bucketAddr + i)->head << std::endl;
+		//		std::cout << (bucketAddr + i)->head << std::endl;
+		//		std::cout << (bucketAddr + i)->head << std::endl;
 			}
 			tableAddr->freeNode = 0;
 			tableAddr->recycledNode = invalidId;
@@ -139,6 +143,7 @@ template <typename K, typename V>
 		uint32_t nodeId = getIdByKey(key);
 		if (nodeId != invalidId) { //modify old node
 			(entry + nodeId)->value = value;
+			MoveToTailLru(nodeId);
 		} else { //add new node
 	//		std::cout << "add new node" << std::endl;
 			nodeId = getFreeNode();
@@ -155,24 +160,22 @@ template <typename K, typename V>
 			newNode->value = value;
 	//		std::cout << "new value: "<< newNode->value << std::endl;
 			uint32_t index;
-			if (nodeId == 0) 
-				index = nodeId;
-			index = nodeId % tableAddr->tableLen;
+			index = hashCode % tableAddr->tableLen;
 	//		std::cout << "index: "<< index << std::endl;
 			addNewNodeToBucket(nodeId, index);
-			std::cout << "add to bucket done" << std::endl;
 			addNewNodeToLru(nodeId);
-			std::cout << "add to lru done" << std::endl;
+			std::cout << "add done" << std::endl;
 		}
 	}
 
 	template <typename K, typename V>
-	const V &cache<K, V>::get(const K &key, const V &Else) {
+	const V &cache<K, V>::getOrElse(const K &key, const V &Else) {
 		std::unique_lock<std::mutex> lock(mtx);
 
 		uint32_t nodeId = getIdByKey(key);
 		if (nodeId == invalidId)
 			return Else;
+		MoveToTailLru(nodeId);
 		return (entry + nodeId)->value;
 	}
 
@@ -180,13 +183,14 @@ template <typename K, typename V>
 	bool cache<K, V>::del(const K &key) {
 		std::unique_lock<std::mutex> lock(mtx);
 
+		std::cout << "del start" << std::endl;
 		uint32_t nodeId = getIdByKey(key);
 		if (nodeId == invalidId) 
 			return false;
 
-		uint32_t index = nodeId % tableAddr->tableLen;
+		uint32_t index = hashFunc(key) % tableAddr->tableLen;
 		recycleNodeFromBucket(nodeId, index);
-		addNewNodeToLru(nodeId);
+		recycleNodeFromLru(nodeId);
 		return true;
 	}
 
@@ -197,6 +201,7 @@ template <typename K, typename V>
 		uint32_t nodeId = getIdByKey(key);
 		if (nodeId == invalidId)
 			return false;
+		MoveToTailLru(nodeId);
 		return true;
 	}
 
@@ -209,24 +214,23 @@ template <typename K, typename V>
 	template <typename K, typename V>
 	void *cache<K, V>::attachFile(const char *pathname, size_t length) {
 		int fd;
-		if (access(pathname, F_OK) == 0) {
-			//file exist
-			if (access(pathname, R_OK|W_OK) == -1) 
-				errexit("access rwok");
-			//	return NULL;
+		struct stat statbuff;
+		if (stat(pathname, &statbuff) == -1) {
+			fd = open(pathname, O_RDWR|O_CREAT|O_EXCL, 0644);
+			if (fd == -1)
+				errexit("open O_CREAT");
+			if (ftruncate(fd, length) == -1) {
+				close(fd);
+				errexit("ftruncate");
+			}
+		}
+		else {
+			if (static_cast<size_t>(statbuff.st_size) != length)
+				errexit("length is not correct.");
 			fd = open(pathname, O_RDWR);
 			if (fd == -1)
 				errexit("open O_RDWR");
-			//	return NULL;
-		} else {
-			fd = open(pathname, O_CREAT|O_RDWR);
-			if (fd == -1) 
-				errexit("open O_CREAT");
-			//	return NULL;
 		}
-		if (ftruncate(fd, length) == -1)
-			errexit("ftruncate");
-		//	return NULL;
 		void *addr = mmap(NULL, length, PROT_WRITE|PROT_READ, MAP_SHARED, fd, 0);
 		close(fd);
 		if (addr == MAP_FAILED)
@@ -238,8 +242,10 @@ template <typename K, typename V>
 	template <typename K, typename V> 
 	void cache<K, V>::releaseFile(void *addr, size_t length) {
 		if (addr != NULL && length != 0) {
+			if (msync(addr, length, MS_SYNC) == -1) 
+				errexit("msync");
 			if (munmap(addr, length) == -1) 
-				errexit("releaseFile");
+				errexit("munmap");
 		}
 	}
 
@@ -252,7 +258,7 @@ template <typename K, typename V>
 		uint32_t nodeId = tmpList->head;
 		std::cout << "nodeId: " << nodeId << std::endl;
 		while (nodeId != invalidId) {
-			std::cout << "nodeId: " << nodeId << std::endl;
+		//	std::cout << "nodeId: " << nodeId << std::endl;
 			struct Node *tmpNode = entry + nodeId;
 			if (tmpNode->hashCode == hashCode && tmpNode->key == key) 
 				break;
@@ -294,9 +300,9 @@ template <typename K, typename V>
 	template <typename K, typename V>
 	void cache<K, V>::addNewNodeToBucket(uint32_t nodeId, uint32_t index) {
 		std::cout << "index: " << index << std::endl;
-		std::cout << "tableLen:" <<tableAddr->tableLen << std::endl;
+	//	std::cout << "tableLen:" <<tableAddr->tableLen << std::endl;
 		std::cout << "nodeId: " << nodeId << std::endl;
-		std::cout << "totalnode" << tableAddr->totalNode << std::endl;
+	//	std::cout << "totalnode" << tableAddr->totalNode << std::endl;
 		if (index >= tableAddr->tableLen || nodeId >= tableAddr->totalNode) 
 			return;
 		struct BucketList *tmpBucket = bucketAddr + index;
@@ -325,9 +331,13 @@ template <typename K, typename V>
 				reinterpret_cast<struct LruNode *>(malloc(sizeof(struct LruNode)));
 			tmpLru->pre = lruAddr->pre;
 			lruAddr->pre = nodeId;
-			if (lruAddr->next == invalidId)
+			if (lruAddr->next == invalidId) {
 				lruAddr->next = nodeId;
-			tmpLru->next = invalidId;
+				tmpLru->next = invalidId;
+			}
+			else {
+				(entry + lruAddr->next)->lru->next = nodeId;
+			}
 			(entry + nodeId)->lru = tmpLru;		
 		}
 	}
@@ -356,9 +366,7 @@ template <typename K, typename V>
 
 		tmpNode->next = tableAddr->recycledNode;
 		tableAddr->recycledNode = nodeId;
-		std::cout << "re: usedCount"<< tableAddr->usedCount;
 		(tableAddr->usedCount)--;
-		std::cout << "usedCount-- done" << tableAddr->usedCount << std::endl;
 	}
 
 	template <typename K, typename V>
@@ -377,6 +385,37 @@ template <typename K, typename V>
 	template <typename K, typename V>
 	uint32_t cache<K, V>::getFirstNodeFromLru() {
 		return lruAddr->nodeId;
+	}
+
+	template <typename K, typename V>
+	void cache<K, V>::recycleNodeFromLru(uint32_t nodeId) {
+		if (nodeId == lruAddr->nodeId) {
+			recycleHeadFromLru();
+			return;
+		}
+		struct LruNode *delLru = (entry + nodeId)->lru;
+		if (nodeId == lruAddr->pre) {
+			lruAddr->pre = delLru->pre;	
+		}
+		if (nodeId == lruAddr->next) {
+			lruAddr->next = delLru->next;
+			if (delLru->next != invalidId)
+				(entry + delLru->next)->lru->pre = lruAddr->nodeId;
+		}
+		else {
+			(entry + delLru->pre)->lru->next = delLru->next;
+			if (lruAddr->next != invalidId)
+				(entry + delLru->next)->lru->pre = delLru->pre;
+		}
+		free(delLru);
+	}
+	
+	template <typename K, typename V>
+	void cache<K, V>::MoveToTailLru(uint32_t nodeId) {
+		if (nodeId == lruAddr->pre)
+			return;
+		recycleNodeFromLru(nodeId);
+		addNewNodeToLru(nodeId);
 	}
 }
 
