@@ -83,7 +83,7 @@ template <typename K, typename V>
 			void MoveToTailLru(uint32_t);
 
 			const uint32_t invalidId = std::numeric_limits<unsigned int>::max();
-			const uint32_t headSize = 1024;
+		//	const uint32_t headSize = 1024;
 
 	};
 	template <typename K, typename V>
@@ -142,7 +142,8 @@ template <typename K, typename V>
 
 		uint32_t nodeId = getIdByKey(key);
 		if (nodeId != invalidId) { //modify old node
-			(entry + nodeId)->value = value;
+			memcpy(&((entry + nodeId)->value), &value, sizeof(value));
+			//(entry + nodeId)->value = value;
 			MoveToTailLru(nodeId);
 		} else { //add new node
 	//		std::cout << "add new node" << std::endl;
@@ -157,7 +158,8 @@ template <typename K, typename V>
 			newNode->hashCode = hashCode;
 	//		std::cout << "new hashCode:" << newNode->hashCode << std::endl;
 	//		std::cout << "value: " << value << std::endl;
-			newNode->value = value;
+			memcpy(&(newNode->value), &value, sizeof(value));
+			//newNode->value = value;
 	//		std::cout << "new value: "<< newNode->value << std::endl;
 			uint32_t index;
 			index = hashCode % tableAddr->tableLen;
@@ -219,10 +221,20 @@ template <typename K, typename V>
 			fd = open(pathname, O_RDWR|O_CREAT|O_EXCL, 0644);
 			if (fd == -1)
 				errexit("open O_CREAT");
+			if (lseek(fd, length-1, SEEK_SET) == -1) {
+				close(fd);
+				errexit("lseek");
+			}
+			if (write(fd, " ", 1) == -1) {
+				close(fd);
+				errexit("write fd " "");
+			}
+			/*
 			if (ftruncate(fd, length) == -1) {
 				close(fd);
 				errexit("ftruncate");
 			}
+			*/
 		}
 		else {
 			if (static_cast<size_t>(statbuff.st_size) != length)
