@@ -22,10 +22,13 @@ namespace lightcache {
 template <typename K, typename V>
 	class cache {
 		public:
+			//Don't use this constructor now because the problem of mmap;
 			cache(char const* pathname,
 				   uint32_t tableSize, 
 				   uint32_t totalNode, 
 				   std::function<size_t(K)> hash);
+
+			cache(uint32_t tableSize, uint32_t totalNode, std::function<size_t(K)> hash);			
 			~cache();
 			cache(const cache &) = delete;
 			cache &operator=(const cache &) = delete;
@@ -81,11 +84,49 @@ template <typename K, typename V>
 			void recycleNodeFromLru(uint32_t);
 			uint32_t getFirstNodeFromLru();
 			void MoveToTailLru(uint32_t);
+			void *mallocLru();
+			void freeLru();
 
 			const uint32_t invalidId = std::numeric_limits<unsigned int>::max();
-		//	const uint32_t headSize = 1024;
 
 	};
+
+	template <typename K, typename V>
+	cache<K, V>::cache(uint32_t tableSize, uint32_t totalNode, std::function<size_t(K)> hash) {
+		memSize = sizeof(struct TableHead) + 
+				  sizeof(struct LruNode) + 
+				  tableSize * sizeof(struct BucketList) +
+				  totalNode * sizeof(struct Node);
+		std::cout << "memSize: " << memSize << std::endl;
+		memAddr = malloc(memSize);		
+		//memAddr = attachFile(pathname, memSize);
+		if (memAddr == NULL) 
+			errexit("cache() attachFile");
+
+		tableAddr = reinterpret_cast<struct TableHead *>(memAddr);
+		bucketAddr = reinterpret_cast<struct BucketList *>
+				(tableAddr + sizeof(struct TableHead));
+		lruAddr = reinterpret_cast<struct LruNode *>
+				(bucketAddr + tableSize * sizeof(struct BucketList));
+		entry = reinterpret_cast<struct Node *>
+				(lruAddr + sizeof(struct LruNode));
+
+		tableAddr->tableLen = tableSize;
+		tableAddr->totalNode = totalNode;
+		tableAddr->fileName[0] = '\0';
+		
+		for (ptrdiff_t i = 0; i < tableSize; i++) {
+			std::cout << "bucket " << i << bucketAddr + i << std::endl;
+			(bucketAddr + i)->head = invalidId;
+			(bucketAddr + i)->tail = invalidId;
+		}
+		tableAddr->freeNode = 0;
+		tableAddr->recycledNode = invalidId;
+		lruAddr->pre = lruAddr->next = lruAddr->nodeId = invalidId;
+			
+		hashFunc = hash; 
+	}
+
 	template <typename K, typename V>
 	cache<K, V>::cache(char const * pathname,
 				uint32_t tableSize,
@@ -116,12 +157,8 @@ template <typename K, typename V>
 			//this is a new cache
 			for (ptrdiff_t i = 0; i < tableSize; i++) {
 				std::cout << "bucket " << i << bucketAddr + i << std::endl;
-		//		std::cout << (bucketAddr + i)->head << std::endl;
-		//		std::cout << (bucketAddr + i)->head << std::endl;
 				(bucketAddr + i)->head = invalidId;
 				(bucketAddr + i)->tail = invalidId;
-		//		std::cout << (bucketAddr + i)->head << std::endl;
-		//		std::cout << (bucketAddr + i)->head << std::endl;
 			}
 			tableAddr->freeNode = 0;
 			tableAddr->recycledNode = invalidId;
@@ -133,7 +170,7 @@ template <typename K, typename V>
 	
 	template <typename K, typename V>
 	cache<K, V>::~cache() {
-		releaseFile(memAddr, memSize);
+		//releaseFile(memAddr, memSize);
 	}
 
 	template <typename K, typename V>
@@ -143,27 +180,16 @@ template <typename K, typename V>
 		uint32_t nodeId = getIdByKey(key);
 		if (nodeId != invalidId) { //modify old node
 			memcpy(&((entry + nodeId)->value), &value, sizeof(value));
-			//(entry + nodeId)->value = value;
 			MoveToTailLru(nodeId);
 		} else { //add new node
-	//		std::cout << "add new node" << std::endl;
 			nodeId = getFreeNode();
-	//		std::cout << "get free node done" << std::endl;
-	//		std::cout << "freeNodeId: "<< nodeId << std::endl;
 			size_t hashCode = hashFunc(key);
 			struct Node *newNode = entry + nodeId;
-	//		std::cout << "newNodeAddr: "<< newNode << std::endl;
 			newNode->key = key;
-	//		std::cout << "new key: "<< newNode->key << std::endl;
 			newNode->hashCode = hashCode;
-	//		std::cout << "new hashCode:" << newNode->hashCode << std::endl;
-	//		std::cout << "value: " << value << std::endl;
 			memcpy(&(newNode->value), &value, sizeof(value));
-			//newNode->value = value;
-	//		std::cout << "new value: "<< newNode->value << std::endl;
 			uint32_t index;
 			index = hashCode % tableAddr->tableLen;
-	//		std::cout << "index: "<< index << std::endl;
 			addNewNodeToBucket(nodeId, index);
 			addNewNodeToLru(nodeId);
 			std::cout << "add done" << std::endl;
@@ -229,16 +255,6 @@ template <typename K, typename V>
 				close(fd);
 				errexit("write fd " "");
 			}
-			/*
-			if (ftruncate(fd, length) == -1) {
-				close(fd);
-				errexit("ftruncate");
-			}
-			*/
-		}
-		else {
-			if (static_cast<size_t>(statbuff.st_size) != length)
-				errexit("length is not correct.");
 			fd = open(pathname, O_RDWR);
 			if (fd == -1)
 				errexit("open O_RDWR");
@@ -270,7 +286,7 @@ template <typename K, typename V>
 		uint32_t nodeId = tmpList->head;
 		std::cout << "nodeId: " << nodeId << std::endl;
 		while (nodeId != invalidId) {
-		//	std::cout << "nodeId: " << nodeId << std::endl;
+			std::cout << "nodeId: " << nodeId << std::endl;
 			struct Node *tmpNode = entry + nodeId;
 			if (tmpNode->hashCode == hashCode && tmpNode->key == key) 
 				break;
@@ -298,6 +314,8 @@ template <typename K, typename V>
 		else if (lruAddr->nodeId != invalidId) {
 			nodeId = getFirstNodeFromLru();
 			recycleHeadFromLru();
+			uint32_t index = hashFunc((entry + nodeId)->key) % tableAddr->tableLen;
+			recycleNodeFromBucket(nodeId, index);
 		}
 		//error
 		else 
@@ -312,9 +330,7 @@ template <typename K, typename V>
 	template <typename K, typename V>
 	void cache<K, V>::addNewNodeToBucket(uint32_t nodeId, uint32_t index) {
 		std::cout << "index: " << index << std::endl;
-	//	std::cout << "tableLen:" <<tableAddr->tableLen << std::endl;
 		std::cout << "nodeId: " << nodeId << std::endl;
-	//	std::cout << "totalnode" << tableAddr->totalNode << std::endl;
 		if (index >= tableAddr->tableLen || nodeId >= tableAddr->totalNode) 
 			return;
 		struct BucketList *tmpBucket = bucketAddr + index;
@@ -383,8 +399,11 @@ template <typename K, typename V>
 
 	template <typename K, typename V>
 	void cache<K, V>::recycleHeadFromLru() {
+		if (lruAddr->nodeId == invalidId) {
+			return;
+		}
 		lruAddr->nodeId = lruAddr->next;
-		if (lruAddr->nodeId != invalidId) {
+		if (lruAddr->next != invalidId) {
 			lruAddr->next = (entry + lruAddr->nodeId)->lru->next;
 			free((entry + lruAddr->nodeId)->lru);
 			(entry + lruAddr->nodeId)->lru = lruAddr;

@@ -6,7 +6,7 @@
 #define firstuse
 
 int main() {
-	lightcache::cache<int, char> test("demo.out", 5, 5, std::hash<int>());
+	lightcache::cache<int, char> test( 5, 5, std::hash<int>());
 #ifdef firstuse
 	test.set(1, 'a');
 	std::cout << "set 1 done\n";
